@@ -52,10 +52,9 @@ namespace AkkaNetServiceEndpoints
 
             Receive<RequestMessage>(msg =>
             {
-                var logEntry = $"Received request from {msg.Sender}: {msg.Content}";
-                _trafficLog.Add(logEntry);
-                Console.WriteLine($"[{_name}] {logEntry}");
-                Sender.Tell(new ResponseMessage(_name, $"Acknowledged: {msg.Content}"));
+                Console.WriteLine($"[{_name}] Received request from {msg.Sender}: {msg.Content}");
+                _trafficLog.Add($"Received: {msg.Content}");
+                Sender.Tell(new ResponseMessage(_name, $"Processed: {msg.Content}"));
             });
 
             Receive<ResponseMessage>(msg =>
@@ -107,10 +106,10 @@ namespace AkkaNetServiceEndpoints
         private readonly IActorRef _serviceA;
         private readonly IActorRef _serviceB;
 
-        public TrafficController([FromKeyedServices("ServiceA")] IActorRef serviceA, [FromKeyedServices("ServiceB")] IActorRef serviceB)
+        public TrafficController(ActorSystem actorSystem)
         {
-            _serviceA = serviceA;
-            _serviceB = serviceB;
+            _serviceA = actorSystem.ActorSelection("/user/ServiceA").ResolveOne(TimeSpan.FromSeconds(3)).Result;
+            _serviceB = actorSystem.ActorSelection("/user/ServiceB").ResolveOne(TimeSpan.FromSeconds(3)).Result;
         }
 
         [HttpGet("traffic")]
@@ -168,8 +167,10 @@ namespace AkkaNetServiceEndpoints
             })), "ServiceB");
 
             builder.Services.AddSingleton(actorSystem);
-            builder.Services.AddKeyedSingleton("ServiceA", serviceA);
-            builder.Services.AddKeyedSingleton("ServiceB", serviceB);
+            builder.Services.AddSingleton(provider =>
+                provider.GetRequiredService<ActorSystem>().ActorSelection("/user/ServiceA").ResolveOne(TimeSpan.FromSeconds(3)).Result);
+            builder.Services.AddSingleton(provider =>
+                provider.GetRequiredService<ActorSystem>().ActorSelection("/user/ServiceB").ResolveOne(TimeSpan.FromSeconds(3)).Result);
             builder.Services.AddControllers();
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen(c =>
