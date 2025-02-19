@@ -1,3 +1,18 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.OpenApi.Models;
+using Akka.Actor;
+
+namespace AkkaNetServiceEndpoints
+{
     // Message definitions
     public class RequestMessage
     {
@@ -84,3 +99,96 @@
             });
         }
     }
+
+    [ApiController]
+    [Route("api/[controller]")]
+    public class TrafficController : ControllerBase
+    {
+        private readonly IActorRef _serviceA;
+        private readonly IActorRef _serviceB;
+
+        public TrafficController([FromKeyedServices("ServiceA")] IActorRef serviceA, [FromKeyedServices("ServiceB")] IActorRef serviceB)
+        {
+            _serviceA = serviceA;
+            _serviceB = serviceB;
+        }
+
+        [HttpGet("traffic")]
+        public async Task<IActionResult> GetTraffic()
+        {
+            var serviceALog = await _serviceA.Ask<List<string>>(new GetTrafficLogMessage());
+            var serviceBLog = await _serviceB.Ask<List<string>>(new GetTrafficLogMessage());
+
+            var trafficLog = new
+            {
+                ServiceA = serviceALog,
+                ServiceB = serviceBLog
+            };
+
+            return Ok(trafficLog);
+        }
+
+        [HttpPost("send")]
+        public IActionResult SendMessage([FromQuery] string sender, [FromQuery] string recipient, [FromQuery] string content)
+        {
+            if (recipient == "ServiceA")
+            {
+                _serviceA.Tell(new RequestMessage(sender, content));
+            }
+            else if (recipient == "ServiceB")
+            {
+                _serviceB.Tell(new RequestMessage(sender, content));
+            }
+            else
+            {
+                return BadRequest("Invalid recipient");
+            }
+
+            return Ok("Message sent");
+        }
+    }
+
+    public class Program
+    {
+        public static void Main(string[] args)
+        {
+            var builder = WebApplication.CreateBuilder(args);
+
+            var actorSystem = ActorSystem.Create("ServiceNetwork");
+            var serviceA = actorSystem.ActorOf(Props.Create(() => new ServiceActor("ServiceA", new List<string>
+            {
+                "ServiceA-Endpoint1",
+                "ServiceA-Endpoint2",
+                "ServiceA-Endpoint3"
+            })), "ServiceA");
+            var serviceB = actorSystem.ActorOf(Props.Create(() => new ServiceActor("ServiceB", new List<string>
+            {
+                "ServiceB-Endpoint1",
+                "ServiceB-Endpoint2"
+            })), "ServiceB");
+
+            builder.Services.AddSingleton(actorSystem);
+            builder.Services.AddKeyedSingleton("ServiceA", serviceA);
+            builder.Services.AddKeyedSingleton("ServiceB", serviceB);
+            builder.Services.AddControllers();
+            builder.Services.AddEndpointsApiExplorer();
+            builder.Services.AddSwaggerGen(c =>
+            {
+                c.SwaggerDoc("v1", new OpenApiInfo { Title = "AkkaNetServiceEndpoints", Version = "v1" });
+            });
+
+            var app = builder.Build();
+
+            if (app.Environment.IsDevelopment())
+            {
+                app.UseDeveloperExceptionPage();
+                app.UseSwagger();
+                app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "AkkaNetServiceEndpoints v1"));
+            }
+
+            app.MapControllers();
+
+            app.Run();
+        }
+    }
+}
