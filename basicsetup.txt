@@ -1,15 +1,3 @@
-using System;
-using System.Collections.Generic;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Akka.Actor;
-
-namespace AkkaNetServiceEndpoints
-{
     // Message definitions
     public class RequestMessage
     {
@@ -35,6 +23,8 @@ namespace AkkaNetServiceEndpoints
         }
     }
 
+    public class GetTrafficLogMessage { }
+
     // Actor representing a service endpoint
     public class ServiceEndpointActor : ReceiveActor
     {
@@ -45,7 +35,6 @@ namespace AkkaNetServiceEndpoints
         {
             _name = name;
 
-            // Define message handling
             Receive<RequestMessage>(msg =>
             {
                 var logEntry = $"Received request from {msg.Sender}: {msg.Content}";
@@ -60,19 +49,8 @@ namespace AkkaNetServiceEndpoints
                 _trafficLog.Add(logEntry);
                 Console.WriteLine($"[{_name}] {logEntry}");
             });
-        }
 
-        public IReadOnlyList<string> GetTrafficLog() => _trafficLog;
-
-        // Lifecycle hooks (optional)
-        protected override void PreStart()
-        {
-            Console.WriteLine($"[{_name}] Starting up...");
-        }
-
-        protected override void PostStop()
-        {
-            Console.WriteLine($"[{_name}] Shutting down...");
+            Receive<GetTrafficLogMessage>(_ => Sender.Tell(_trafficLog));
         }
     }
 
@@ -86,97 +64,23 @@ namespace AkkaNetServiceEndpoints
         {
             _serviceName = serviceName;
 
-            // Create endpoints within this service using provided names
             foreach (var endpointName in endpointNames)
             {
                 var endpoint = Context.ActorOf(Props.Create(() => new ServiceEndpointActor(endpointName)), endpointName);
                 _endpoints.Add(endpoint);
             }
 
-            // Define message handling
             Receive<RequestMessage>(msg =>
             {
-                // Distribute message to one of the endpoints (round-robin or random)
+                Console.WriteLine($"[{_serviceName}] Handling request from {msg.Sender}: {msg.Content}");
                 var endpoint = _endpoints[new Random().Next(_endpoints.Count)];
                 endpoint.Forward(msg);
             });
+
+            Receive<GetTrafficLogMessage>(async msg =>
+            {
+                var responses = await Task.WhenAll(_endpoints.Select(endpoint => endpoint.Ask<List<string>>(msg)));
+                Sender.Tell(responses.SelectMany(r => r).ToList());
+            });
         }
     }
-
-    [ApiController]
-    [Route("api/[controller]")]
-    public class TrafficController : ControllerBase
-    {
-        private readonly ActorSystem _actorSystem;
-        private readonly IActorRef _serviceA;
-        private readonly IActorRef _serviceB;
-
-        public TrafficController(ActorSystem actorSystem)
-        {
-            _actorSystem = actorSystem;
-
-            _serviceA = _actorSystem.ActorOf(Props.Create(() => new ServiceActor("ServiceA", new List<string>
-            {
-                "ServiceA-Endpoint1",
-                "ServiceA-Endpoint2",
-                "ServiceA-Endpoint3"
-            })), "ServiceA");
-
-            _serviceB = _actorSystem.ActorOf(Props.Create(() => new ServiceActor("ServiceB", new List<string>
-            {
-                "ServiceB-Endpoint1",
-                "ServiceB-Endpoint2"
-            })), "ServiceB");
-        }
-
-        [HttpGet("traffic")]
-        public IActionResult GetTraffic()
-        {
-            // Global traffic log aggregation could be added here if needed
-            return Ok("Traffic log aggregation not implemented for individual actors in this example.");
-        }
-
-        [HttpPost("send")]
-        public IActionResult SendMessage([FromQuery] string sender, [FromQuery] string recipient, [FromQuery] string content)
-        {
-            if (recipient == "ServiceA")
-            {
-                _serviceA.Tell(new RequestMessage(sender, content));
-            }
-            else if (recipient == "ServiceB")
-            {
-                _serviceB.Tell(new RequestMessage(sender, content));
-            }
-            else
-            {
-                return BadRequest("Invalid recipient");
-            }
-
-            return Ok("Message sent");
-        }
-    }
-
-    public class Program
-    {
-        public static void Main(string[] args)
-        {
-            var builder = WebApplication.CreateBuilder(args);
-
-            // Add services to the container.
-            builder.Services.AddSingleton(ActorSystem.Create("ServiceNetwork"));
-            builder.Services.AddControllers();
-
-            var app = builder.Build();
-
-            // Configure the HTTP request pipeline.
-            if (app.Environment.IsDevelopment())
-            {
-                app.UseDeveloperExceptionPage();
-            }
-
-            app.MapControllers();
-
-            app.Run();
-        }
-    }
-}
